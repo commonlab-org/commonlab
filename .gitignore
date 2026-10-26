@@ -7,6 +7,9 @@
 *.sqlite3-wal
 *.sqlite3-shm
 /.env
+/.deploy/
+__pycache__/
+*.pyc
 # Operator-only agent trace output (prompts and private source).
 **/agent-traces/
 generation-*-*-*.jsonl

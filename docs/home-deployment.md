@@ -1,8 +1,16 @@
 # Home deployment
 
 `compose.home.yaml` runs CommonLab, its OpenRouter worker, and Cloudflared
-without publishing host ports. Images are built on the host; no registry push
-is needed. The deployment directory is `~/apps/commonlab` on `patrick@home`.
+without publishing host ports. The deployment directory is `~/apps/commonlab`
+on `patrick@home`.
+
+Releases are published to public `pat381/commonlab` and pulled by a coordinated
+host updater. The app and worker use separate tags from that one repository;
+`latest` points at the app image and carries the exact worker digest label.
+A release is committed only after both images pass smoke tests. The updater
+backs up SQLite, stops the worker and app, starts the pinned pair, and latches
+on failure rather than retrying blindly. Cloudflared is never restarted by the
+updater.
 
 ## Secrets and launch
 
@@ -56,9 +64,40 @@ docker cp commonlab-generation-worker-1:/var/lib/commonlab/agent-traces/generati
 
 Retention is independent of SQLite and runs at the start of each traced job. See [AI generation](ai-generation.md#optional-operator-only-agent-traces) for size caps, redaction and interrupted-run limitations.
 
+## Registry releases and automatic updates
+
+From a clean, committed checkout, `just deploy` builds and verifies both
+`linux/amd64` images, refuses to overwrite an existing revision tag, publishes
+immutable `app-<git-sha>` and `worker-<git-sha>` tags, and advances `latest`
+last. It needs a Docker Hub login with write access to `pat381/commonlab`; no
+Cargo version bump is required (the Git revision and image digest identify a
+release).
+
+The first registry rollout is manual:
+
+```sh
+just install-updater   # stage files/units; does not start or enable anything
+just update-home       # coordinated first deployment from the registry
+just enable-auto-update
+```
+
+Later `just deploy` publishes a release; an enabled timer checks every five
+minutes and deploys it. If the updater fails, it writes a private record under
+`~/apps/commonlab/.deploy/`, keeps the old pair running when safe, or stops
+services without reusing an old binary against a possibly migrated database.
+
+```sh
+just deploy-status        # timer/service state and recent journal
+just pause-auto-update    # stop future checks; a running update is not interrupted
+```
+
+Do not clear `failure.json` or `in-progress.json` until the named recovery step
+is done; those latches block all further Docker changes. Backups contain `.env`
+and are mode `0600` inside a `0700` directory. Keep them private.
+
 ## Operations
 
-Builds use host networking to work around this host's BuildKit DNS failure.
+Local builds use host networking to work around this host's BuildKit DNS failure.
 Buildx requires an explicit entitlement (runtime networking stays private):
 
 ```sh
