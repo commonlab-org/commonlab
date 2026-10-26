@@ -11,11 +11,16 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 REPOSITORY = "pat381/commonlab"
 DIGEST = re.compile(r"pat381/commonlab@sha256:[0-9a-f]{64}\Z")
 REVISION = re.compile(r"[0-9a-f]{40}\Z")
 PROJECT = "commonlab"
+PUBLIC_URL = os.environ.get("COMMONLAB_PUBLIC_URL", "https://common-lab.org").rstrip("/")
+if not PUBLIC_URL.startswith("https://"):
+    raise RuntimeError("COMMONLAB_PUBLIC_URL must use HTTPS")
 
 
 class UpdateError(RuntimeError):
@@ -123,6 +128,33 @@ def compose(directory, images, *arguments):
         raise UpdateError("Registry Compose operation failed; inspect private service logs")
 
 
+def public_check():
+    """Cloudflare's browser challenge is inconclusive, not broken origin health."""
+    for path in ("/healthz", "/simulations/catalog.json"):
+        try:
+            # PUBLIC_URL is restricted to HTTPS above; paths are host-owned constants.
+            with urlopen(PUBLIC_URL + path, timeout=30) as response:  # noqa: S310
+                body = response.read(4 * 1024 * 1024).decode()
+        except HTTPError as error:
+            if error.code == 403 and error.headers.get("cf-mitigated") == "challenge":
+                print("WARNING: Cloudflare challenged the public probe; origin is healthy, "
+                      "but public browser verification is still required", file=sys.stderr)
+                return "cloudflare-challenge"
+            raise UpdateError(f"Public endpoint returned HTTP {error.code}") from error
+        except (URLError, TimeoutError) as error:
+            raise UpdateError("Public endpoint could not be reached") from error
+        if path == "/healthz" and body.strip() != "ok":
+            raise UpdateError("Public health endpoint did not return ok")
+        if path.endswith("catalog.json"):
+            try:
+                catalog = json.loads(body)
+                if not isinstance(catalog, dict) or "schemaVersion" not in catalog:
+                    raise ValueError("Invalid catalog")
+            except ValueError as error:
+                raise UpdateError("Public catalog is invalid") from error
+    return "ok"
+
+
 def stopped(info):
     if inspect(info["Id"])["State"].get("Running"):
         raise UpdateError("Container still running after stop; refusing backup")
@@ -164,6 +196,11 @@ def update(directory):
             if worker_labels.get("org.opencontainers.image.revision") != candidate["revision"]:
                 raise UpdateError("App and worker revisions do not match")
             compose(directory, candidate, "config", "--quiet")
+            stage = "preflight worker configuration (no model calls)"
+            compose(directory, candidate, "run", "--rm", "-T", "--no-deps",
+                    "--pull", "never", "--entrypoint", "node", "generation-worker",
+                    "--input-type=module", "-e",
+                    'import {checkConfiguration} from "./runner.mjs"; checkConfiguration();')
             old = {service: container(service) for service in ("app", "generation-worker")}
             data_volume = volume(old["app"], "/data")
             checkpoint_mounts = [m for m in old["generation-worker"]["Mounts"]
@@ -212,14 +249,14 @@ def update(directory):
             run("docker", "exec", worker["Id"], "node", "--input-type=module", "-e",
                 'import {CheckpointStore} from "./checkpoints.mjs"; '
                 'await CheckpointStore.open("/var/lib/commonlab/checkpoints");')
-            stage = "check public routing"
-            health = run("curl", "--fail", "--silent", "--show-error", "--max-time", "30",
-                         "https://commonlab.poberholzer.com/healthz")
-            if health != "ok":
-                raise UpdateError("Public health endpoint did not return ok")
-            run("curl", "--fail", "--silent", "--show-error", "--max-time", "30",
-                "https://commonlab.poberholzer.com/simulations/catalog.json")
-            atomic_json(state / "success.json", candidate)
+            stage = "check origin HTTP and public routing"
+            run("docker", "exec", worker["Id"], "node", "--input-type=module", "-e",
+                'const h = await fetch("http://app:8000/healthz"); '
+                'if (!h.ok || (await h.text()).trim() !== "ok") throw new Error("Origin health failed"); '
+                'const c = await fetch("http://app:8000/simulations/catalog.json"); '
+                'if (!c.ok || !("schemaVersion" in await c.json())) throw new Error("Origin catalog failed");')
+            public_status = public_check()
+            atomic_json(state / "success.json", {**candidate, "public_health": public_status})
             (state / "in-progress.json").unlink()
             print("Deployed " + candidate["revision"] + "; backup: " + str(backup))
         except Exception as error:

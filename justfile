@@ -26,7 +26,7 @@ pause-auto-update:
 
 # Inspect the updater's latest result; no secrets or resolved Compose output.
 deploy-status:
-    ssh patrick@home 'systemctl status commonlab-update.timer commonlab-update.service --no-pager'
+    ssh patrick@home 'systemctl status commonlab-update.timer --no-pager; systemctl show commonlab-update.service -p Result -p ExecMainStatus -p ActiveState'
 
 # Local checks only: never build, publish, SSH, or deploy.
 test-deploy:

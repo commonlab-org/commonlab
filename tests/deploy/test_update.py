@@ -46,6 +46,7 @@ class UpdateTests(unittest.TestCase):
         for name, fake in (("run", self.run_command), ("inspect", self.inspect),
                            ("container", lambda service: self.infos[service]),
                            ("compose", self.compose), ("backup_volume", self.backup),
+                           ("public_check", self.public_check),
                            ("wait_healthy", lambda *args: self.events.append(("healthy", *args)))):
             patcher = patch.object(updater, name, fake)
             patcher.start()
@@ -84,13 +85,19 @@ class UpdateTests(unittest.TestCase):
             raise updater.UpdateError("injected backup failure")
         path.write_bytes(b"fake verified archive")
 
+    def public_check(self):
+        if self.health == "wrong response":
+            raise updater.UpdateError("Public health endpoint did not return ok")
+        return self.health
+
     def update(self):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             updater.update(self.root)
 
     def test_success_order_and_private_backup(self):
         self.update()
-        self.assertEqual(json.loads((self.state / "success.json").read_text()), RELEASE)
+        self.assertEqual(json.loads((self.state / "success.json").read_text()),
+                         {**RELEASE, "public_health": "ok"})
         self.assertFalse((self.state / "in-progress.json").exists())
         self.assertFalse((self.state / "failure.json").exists())
         events = self.events
@@ -159,6 +166,19 @@ class UpdateTests(unittest.TestCase):
         self.assertTrue((self.state / "failure.json").exists())
         self.assertFalse((self.state / "success.json").exists())
 
+    def test_challenge_records_warning_but_keeps_healthy_pair_running(self):
+        self.health = "cloudflare-challenge"
+        self.update()
+        result = json.loads((self.state / "success.json").read_text())
+        self.assertEqual(result["public_health"], "cloudflare-challenge")
+        self.assertFalse((self.state / "failure.json").exists())
+
+    def test_worker_configuration_checked_before_stop(self):
+        self.inject_failure = lambda event: event[:2] == ("compose", "run")
+        with self.assertRaisesRegex(updater.UpdateError, "preflight worker configuration"):
+            self.update()
+        self.assertFalse(any(e[:2] == ("docker", "stop") for e in self.events))
+
     def test_checkpoint_volume_backed_up_when_present(self):
         self.infos["generation-worker"]["Mounts"].append({
             "Type": "volume", "Name": "commonlab_generation-checkpoints",
@@ -192,6 +212,24 @@ class UpdateTests(unittest.TestCase):
             updater.fcntl.flock(lock, updater.fcntl.LOCK_EX | updater.fcntl.LOCK_NB)
             self.update()
         self.assertEqual(self.events, [])
+
+
+class PublicCheckTests(unittest.TestCase):
+    def test_cloudflare_challenge_is_inconclusive(self):
+        error = updater.HTTPError(updater.PUBLIC_URL, 403, "Forbidden",
+                                  {"cf-mitigated": "challenge"}, io.BytesIO())
+        with patch.object(updater, "urlopen", side_effect=error), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(updater.public_check(), "cloudflare-challenge")
+
+    def test_plain_forbidden_is_not_silently_ignored(self):
+        error = updater.HTTPError(updater.PUBLIC_URL, 403, "Forbidden", {}, io.BytesIO())
+        with patch.object(updater, "urlopen", side_effect=error), self.assertRaisesRegex(updater.UpdateError, "HTTP 403"):
+            updater.public_check()
+
+    def test_origin_error_is_not_silently_ignored(self):
+        error = updater.HTTPError(updater.PUBLIC_URL, 502, "Bad Gateway", {}, io.BytesIO())
+        with patch.object(updater, "urlopen", side_effect=error), self.assertRaisesRegex(updater.UpdateError, "HTTP 502"):
+            updater.public_check()
 
 
 class ReleaseTests(unittest.TestCase):

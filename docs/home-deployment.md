@@ -12,31 +12,35 @@ backs up SQLite, stops the worker and app, starts the pinned pair, and latches
 on failure rather than retrying blindly. Cloudflared is never restarted by the
 updater.
 
-## Secrets and launch
+## Secrets and configuration
 
 Edit `~/apps/commonlab/.env` on the host (permissions must stay `600`):
 
 - `ADMIN_TOKEN`: generated administrator token; enter it at `/review.html`.
 - `GENERATION_WORKER_TOKEN`: generated shared application/worker token.
 - `CL_MODEL_API_KEY`: dedicated OpenRouter key, with provider-side spend limits.
+- `CL_REVIEW_MODEL_PROVIDER=openrouter` and
+  `CL_REVIEW_MODEL_ID=deepseek/deepseek-v4.1-flash-1017`: required image-capable
+  independent reviewer (uses the author key unless a reviewer key is configured).
+- `CL_REVIEW_REASONING_EFFORT=low`: reviewer reasoning setting.
 - `CLOUDFLARE_TUNNEL_TOKEN`: rotated tunnel token.
 
 Do not paste secrets or resolved Compose configuration into logs or chat.
 In Cloudflare, configure the tunnel's public hostname
-`commonlab.poberholzer.com` with service `http://app:8000`.
+`common-lab.org` with service `http://app:8000`. The updater checks
+`https://common-lab.org/healthz`; override `COMMONLAB_PUBLIC_URL` in the
+systemd service if the hostname changes.
 The browser connection uses HTTPS; the worker uses the private Docker network.
 No existing tunnel containers need to be modified.
 
-After filling both empty secrets:
+The registry worker defaults to `openrouter` and `xiaomi/mimo-v2.6-flash`;
+`CL_MODEL_PROVIDER` and `CL_MODEL_ID` can override these in `.env`. Environment
+changes require explicit recreation with the installed registry Compose file
+and the pinned pair recorded in `.deploy/success.json`; a no-change updater
+check does not recreate containers. Do not use the legacy local-image launch
+command after migrating to registry images.
 
-```sh
-cd ~/apps/commonlab
-docker compose -f compose.home.yaml --profile generation --profile tunnel up -d
-```
-
-The worker uses `openrouter` and `xiaomi/mimo-v2.6-flash`. Changing these
-requires editing the Compose file and recreating the worker. Registration
-does not grant AI access: approve the contributor in the review UI, then
+Registration does not grant AI access: approve the contributor in the review UI, then
 request a generation at `/generate.html`. This incurs provider charges.
 Generated engines remain private until explicitly submitted and reviewed.
 
@@ -51,7 +55,7 @@ CL_AGENT_TRACE_MAX_BYTES=8388608
 CL_AGENT_TRACE_MAX_DAYS=7
 ```
 
-Recreate the worker using the same profile launch command. The Compose file provides a worker-only named volume (`commonlab_generation-traces`); the app and tunnel cannot serve it. Files are mode `0600` under a `0700` directory. Traces include prompts, intermediate source and tool results, exclude private reasoning, and redact known credentials. Do not paste them into public logs. Leaving `CL_AGENT_TRACE_DIR` empty disables tracing.
+Recreate the worker using the installed registry Compose file and pinned pair. The Compose file provides a worker-only named volume (`commonlab_generation-traces`); the app and tunnel cannot serve it. Files are mode `0600` under a `0700` directory. Traces include prompts, intermediate source and tool results, exclude private reasoning, and redact known credentials. Do not paste them into public logs. Leaving `CL_AGENT_TRACE_DIR` empty disables tracing.
 
 List or copy files locally as the operator, for example:
 
@@ -95,7 +99,18 @@ Do not clear `failure.json` or `in-progress.json` until the named recovery step
 is done; those latches block all further Docker changes. Backups contain `.env`
 and are mode `0600` inside a `0700` directory. Keep them private.
 
-## Operations
+The updater checks worker configuration before downtime, then verifies both
+container health checks, authenticated worker handshake, atomic checkpoint
+storage, and origin HTTP/catalog access. A Cloudflare browser challenge is
+recorded as `public_health: cloudflare-challenge` with a warning, not mistaken
+for a broken origin. Other public failures still fail the deployment. Browser
+verification remains necessary when Cloudflare challenges automated probes.
+
+## Legacy local builds (not the registry deployment)
+
+Do not run legacy Compose `up` after migrating: it selects local images rather
+than the pinned registry pair. These commands are retained only for offline
+image builds and deliberate operator recovery.
 
 Local builds use host networking to work around this host's BuildKit DNS failure.
 Buildx requires an explicit entitlement (runtime networking stays private):
@@ -106,8 +121,8 @@ docker buildx bake -f compose.home.yaml --allow=network.host --load \
   app generation-worker
 ```
 
-Then recreate services with the launch command above. Do not add `--build`
-to Compose on this host; use the explicit Buildx command instead.
+Do not add `--build` to Compose on this host; use the explicit Buildx command
+for local builds. Normal registry releases use `just deploy` instead.
 
 ```sh
 cd ~/apps/commonlab
