@@ -1,20 +1,27 @@
-# CommonLab
+# [CommonLab](https://common-lab.org)
 
-Browser-based science simulations for safe, repeatable exploration, served by a Rust **Axum** application. The frontend is plain HTML/CSS/JavaScript with a vendored math renderer; no frontend build step or login is required.
+A lab bench for any student with a browser.
 
-## Run
+![homepage](docs/rsc/homepage.png)
 
-Install a current stable Rust toolchain, then run from the repository root:
+## About
 
-```sh
-cargo run
-```
+CommonLab aims to provide free, browser-based physics and chemistry lab
+simulations for schools and students without access to lab equipment. It's
+mission is to achieve:
 
-Visit `http://localhost:8000`. Simulation routes such as `/simulations/pendulum` and old bookmarks such as `/simulations/pendulum.html` all use the shared shell. `GET /healthz` returns `ok` for health checks.
+- Equity in science - provide high quality hands-on learning materials for all
+- Based on real science - no trickery or animations, everything is powered by physically accurate simulations
+
+## How to self-host
+
+The project can no longer be run effectively on bare metal. You are expected to
+use containers and no support is provided for other deployment setups.
 
 ### Configuration and deployment
 
-For the complete Docker setup—including HTTPS, persistent storage, the optional AI worker, backups, updates, and troubleshooting—see the [deployment guide](docs/deployment.md).
+For the complete Docker setup—including HTTPS, persistent storage, the optional
+AI worker, backups, updates, and troubleshooting—see the [deployment guide](docs/deployment.md).
 
 - `BIND_ADDR`: socket address, default `127.0.0.1:8000`. Use `0.0.0.0:8000` to listen on all IPv4 interfaces.
 - `PUBLIC_DIR`: asset directory, default `public`, relative to the process working directory. It must contain `index.html`; startup fails otherwise.
