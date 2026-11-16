@@ -2,7 +2,7 @@
 
 A lab bench for any student with a browser.
 
-![homepage](docs/rsc/homepage.png)
+![homepage](docs/rsc/homepage-demo.png)
 
 ## About
 
